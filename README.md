@@ -1,4 +1,4 @@
 # Zabbix_Online_detection
-Zabbix Online Anomaly Detection
+## Start Zabbix Online Anomaly Detection
 
-python zabbix_anomaly_detection.py
+`python zabbix_anomaly_detection.py`

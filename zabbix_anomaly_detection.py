@@ -15,105 +15,155 @@ from tensorflow.keras import regularizers
 from tensorflow.keras.optimizers import Adam,RMSprop
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import train_test_split
 import math,json,os,random
+import time
 from scipy import stats
 random.seed(2)
 #my scaler
 import predict_utils
 #read pre-trained scaler
 from pickle import load
+import tcn
+from tcn import TCN 
 
 anomaly_threshold = 5.
 tolerance = 20
-
+detection_columns = ["Memory used  (%)",
+        "CPU utilization (%) ",
+        "Disk (0 C:) - Current Disk Queue Length",
+        "Disk (1 D:) - Current Disk Queue Length"]
 try:
     # Load the scaler
-    scaler = load(open('scaler.pkl', 'rb'))
-    # Load model
-    predict_model = load_model("./Model/conv_ae.h5")
+    scaler = load(open('5v_scaler.pkl', 'rb'))  
 except:
-    print("loading error")
+    print("loading scaler error")
 
-# Read Dataframe
-data_root_path = "./Dataset"
-data5v_path = os.path.join(data_root_path,"predict_data5V.csv")
-data6v_path = os.path.join(data_root_path,"predict_data6V.csv")
-data5v = predict_utils.read_data(data5v_path,fill_zero=True)
-data6v = predict_utils.read_data(data6v_path,fill_zero=True)
+try:
+    # Load model
+    predict_model = load_model("./Model/best_model/tcnae.h5",custom_objects={"TCN":TCN})  
+except:
+    print("loading model error")
 
-# Sliding window generate Input Dataframe
-data_list = []
-lag = 1
-for i in range(0,data5v.shape[0]-100,lag):
-    data_list.append(data5v[i:i+100])
-for i in range(0,data6v.shape[0]-100,lag):
-    data_list.append(data6v[i:i+100])
-#--------------------------------------------------------------
-# We take shuffle Dataframe for testing
-num_list = list(range(len(data_list)))
-random.shuffle(num_list) 
-for sample_data in  random.sample(data_list,10):
-
+def read_data(path,o_dtname="Datetime",c_dtname = 'datetime'):
+    df = pd.read_csv(path, sep=',', 
+                     parse_dates={c_dtname:[o_dtname]}, 
+                     infer_datetime_format=True, 
+                     low_memory=False, 
+                     na_values=['nan','?'], 
+                     index_col=c_dtname)
     
-    In_data = sample_data
-    
-    usage = In_data.iloc[:,1:].values
-    host = In_data.iloc[:,0].values
-    date_time = In_data.index
-    
-    # Fit scaler with shape (None,8)
-    usage = np.concatenate([usage,usage,usage,usage],axis=1)
-    usage = scaler.transform(usage)[:,:2]
+    print(df.isnull().sum())
+    return df
 
-    # Generate sliding windows
-    window_size = 32
+def pre_process(csv_path):
+    
 
-    X_list = []
-    time_list = []
-    host_name = stats.mode(host)[0].item()
-    for i in range(0,usage.shape[0]-window_size):
+    data = read_data(csv_path,o_dtname="datetime",c_dtname = 'Datetime')
+    
+    #get Specified name columns
+    QoC_df = data[data["name"]=="Disk (0 C:) - Current Disk Queue Length"]
+    QoD_df = data[data["name"]=="Disk (1 D:) - Current Disk Queue Length"]
+    MEMUSG_df = data[data["name"]=="Memory used  (%)"]
+    CPUUSG_df = data[data["name"]=="CPU utilization (%)"]
+    
+    
+    select_col_list = [MEMUSG_df.loc[:,["host","value"]],
+                   CPUUSG_df.loc[:,["value"]],
+                   QoC_df.loc[:,["value"]],
+                   QoD_df.loc[:,["value"]]]
+
+    #Concat dataframe
+    new_df = pd.concat(select_col_list,axis=1)
+    new_df["host"] = new_df.iloc[:,0]
+    new_df["Memory used  (%)"] = new_df.iloc[:,1]
+    new_df["CPU utilization (%)"] = new_df.iloc[:,2]
+    new_df["Disk (0 C:) - Current Disk Queue Length"] = new_df.iloc[:,3]
+    new_df["Disk (1 D:) - Current Disk Queue Length"] = new_df.iloc[:,4]
+    new_df = new_df.drop(columns="value")
+    
+
+    #Fill NaN
+    new_df.fillna(method='ffill', inplace=True)
+    new_df.fillna(method='bfill', inplace=True)
+    
+    #Reverse dataframe if it is reversed 
+    if new_df.index[0] > new_df.index[-1]:
+        new_df = new_df.iloc[::-1]
+    
+    #Resample data
+    #Usage: Mean within an hour 
+    #Quene: Sum within an hour
+    new_df = pd.concat([new_df.iloc[:,[0]].resample("h").bfill(),
+                        new_df.iloc[:,[1,2]].resample("h").mean(),
+                        new_df.iloc[:,[3,4]].resample("h").sum()],
+                        axis=1)
+    print(new_df)
+    return new_df
+
+def mean_absolute_percentage_error(y_true, y_pred): 
+    return np.mean(np.abs((y_true - y_pred) / y_true)) * 100
+
+def cal_score(y_real,y_hat):
+    from sklearn.metrics import mean_squared_error
+    from sklearn.metrics import mean_absolute_error
+    import math
+
+    MAEScore = mean_absolute_error(y_real,y_hat)
+    RMSEScore = math.sqrt(mean_squared_error(y_real,y_hat))
+    MAPEScore = mean_absolute_percentage_error(y_real,y_hat)
+
+    return round(MAEScore,3),round(RMSEScore,3),round(MAPEScore,3)
+
+df = pre_process("./Dataset/OPTIdata/5v_180days.csv")
+
+df_list = []
+for i in range(0,df.shape[0],100):
+    
+    if df.iloc[i:i+100].shape[0] == 100:
+        df_list.append(df.iloc[i:i+100,:])
+    else:
+        print("tail")
         
-        time_list.append(date_time[i:i+window_size])
-        X_list.append(usage[i:i+window_size,:])
+        df_list.append(df.iloc[-100:,:])
+        
+        break
 
-    # X shape : (window_num,32,2)
-    X = np.array(X_list)
-
-    # Predict
-    cnt = 0
-    anomaly_list = []
-    for i in range(X.shape[0]):
-        batch = X[i]
-        res = predict_model.predict(batch.reshape(1,32,2))
-
-        res = np.concatenate([res,res,res,res],axis=1).reshape(-1,8)
-        res = scaler.inverse_transform(res).reshape(-1,32,8)[:,:,:2]
-        actual = np.concatenate([batch,batch,batch,batch],axis=1).reshape(-1,8)
-        actual = scaler.inverse_transform(actual).reshape(-1,32,8)[:,:,:2]
-
-        score,_,_ = predict_utils.cal_score(actual.reshape(-1,2),res.reshape(-1,2),model_name="Conv")
-
-        if score >= anomaly_threshold:
-            cnt += 1
-            anomaly_list.append(i)
+predict_count = 0
+window_size = 32
+while True:
+    
+    
+    
+    if len(df_list) > 0:
+        
+        if predict_count >= len(df_list):
+            print("Waiting...")
+            time.sleep(5)
+        else:
+            df_list[predict_count].iloc[:,[1,2,3,4]] = scaler.transform(df_list[predict_count].iloc[:,[1,2,3,4]])
             
-            if len(anomaly_list) >= tolerance:
                 
-                print("Warning!!")
-                print(host_name)
-                print("Failure range : {} ~ {}".format(time_list[anomaly_list[0]][0],
-                                                       time_list[anomaly_list[-1]][-1]))
-                break
-        
-
-
-    # Inverse scaler (num,32,8) -> (num*32,8)
+            #Sliding Window
+            #size=32
+            for i in range(0,df_list[predict_count].shape[0]-window_size):
+                
+                time_range_start = df_list[predict_count].iloc[i:i+window_size].index.values[0]
+                time_range_end = df_list[predict_count].iloc[i:i+window_size].index.values[-1]
+                
+                pre_batch = np.expand_dims(df_list[predict_count].iloc[i:i+window_size,[1,2,3,4]].values,axis=0)
+                
+                pre = predict_model.predict(pre_batch)
+                pre[0] = scaler.inverse_transform(pre[0])
+                pre_batch[0] = scaler.inverse_transform(pre_batch[0])
+                mae,_,_ = cal_score(pre_batch[0,:,0:2],pre[0,:,0:2])
+                if mae >=0.1:
+                    print("Anomaly")
+                    print("{}~{}".format(time_range_start,time_range_end))
+                else:
+                    continue
+            
+            predict_count += 1
+    else:
+        print("List empty")        
     
-    
-
-    
-
-    
-
-    
-

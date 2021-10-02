@@ -1,13 +1,12 @@
 # Zabbix_Online_detection
 ## Start Online Anomaly Detection
-
 `python zabbix_anomaly_detection.py`
 
 ## Failure Bitmap on Sliding Window Operation
 1 0 0 1 1 1 1 1 0 0 0 0 0 0 0 0 1 0 0 0 0 0 1 0 1 0 0 0 0 0 0 1 0 1 0 0 0 0 0 1 0 1 1 0 1 0 1 0 0 0 1 1 1 1 1 1 0 1 0 0 0 1 0 0 1 0 1 1 
 
 ## Failure Range
-Anomaly Range  
+Print the upper and lower bounds of continuous anomaly time  
 '2021-07-05T13:00:00.000000000~2021-07-06T20:00:00.000000000'
 
 ## Sample Output

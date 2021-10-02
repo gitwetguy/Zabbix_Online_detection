@@ -16,7 +16,7 @@ from tensorflow.keras.optimizers import Adam,RMSprop
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import train_test_split
-import math,json,os,random
+import math,json,os,random,itertools
 import time
 from scipy import stats
 random.seed(2)
@@ -146,6 +146,8 @@ while True:
                 
             #Sliding Window
             #size=32
+            failure_list = list(itertools.repeat(0,df_list[predict_count].shape[0]-window_size))
+            time_list = []
             for i in range(0,df_list[predict_count].shape[0]-window_size):
                 
                 time_range_start = df_list[predict_count].iloc[i:i+window_size].index.values[0]
@@ -156,12 +158,20 @@ while True:
                 pre = predict_model.predict(pre_batch)
                 pre[0] = scaler.inverse_transform(pre[0])
                 pre_batch[0] = scaler.inverse_transform(pre_batch[0])
-                mae,_,_ = cal_score(pre_batch[0,:,0:2],pre[0,:,0:2])
-                if mae >=0.1:
-                    print("Anomaly")
-                    print("{}~{}".format(time_range_start,time_range_end))
-                else:
+                mae,rmse,_ = cal_score(pre_batch[0,:,0:2],pre[0,:,0:2])
+                if (mae+rmse)/2 >=0.1:
+                    #print("Anomaly")
+                    failure_list[i] = 1
+                    time_list.append([str(time_range_start)+"~"+str(time_range_end)])
+                    #print("{}~{}".format(time_range_start,time_range_end))
+                    #print(*failure_list)
+                    
+                elif len(time_list) == 0:
                     continue
+                else:
+                    print("Anomaly Range\n{}~{}".format(str(time_list[0]).split("~")[0],str(time_list[-1]).split("~")[-1]))
+                    time_list = []
+                    
             
             predict_count += 1
     else:

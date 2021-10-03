@@ -1,9 +1,6 @@
 # Import the libraries
 import tensorflow as tf
 from tensorflow import keras
-import matplotlib.pyplot as plt
-#physical_devices = tf.config.list_physical_devices('GPU')
-#tf.config.experimental.set_memory_growth(physical_devices[0], enable=True)
 import numpy as np
 import matplotlib.pyplot as plt  
 import pandas as pd
@@ -33,6 +30,7 @@ detection_columns = ["Memory used  (%)",
         "CPU utilization (%) ",
         "Disk (0 C:) - Current Disk Queue Length",
         "Disk (1 D:) - Current Disk Queue Length"]
+
 try:
     # Load the scaler
     scaler = load(open('5v_scaler.pkl', 'rb'))  
@@ -45,6 +43,7 @@ try:
 except:
     print("loading model error")
 
+#Read CSV 
 def read_data(path,o_dtname="Datetime",c_dtname = 'datetime'):
     df = pd.read_csv(path, sep=',', 
                      parse_dates={c_dtname:[o_dtname]}, 
@@ -56,6 +55,7 @@ def read_data(path,o_dtname="Datetime",c_dtname = 'datetime'):
     print(df.isnull().sum())
     return df
 
+#Pre process raw data and get key columns
 def pre_process(csv_path):
     
 
@@ -67,7 +67,7 @@ def pre_process(csv_path):
     MEMUSG_df = data[data["name"]=="Memory used  (%)"]
     CPUUSG_df = data[data["name"]=="CPU utilization (%)"]
     
-    
+    #get host name and value
     select_col_list = [MEMUSG_df.loc[:,["host","value"]],
                    CPUUSG_df.loc[:,["value"]],
                    QoC_df.loc[:,["value"]],
@@ -101,9 +101,11 @@ def pre_process(csv_path):
     print(new_df)
     return new_df
 
+#caculate mape
 def mean_absolute_percentage_error(y_true, y_pred): 
     return np.mean(np.abs((y_true - y_pred) / y_true)) * 100
 
+#caculate and return rmse,mae,mape
 def cal_score(y_real,y_hat):
     from sklearn.metrics import mean_squared_error
     from sklearn.metrics import mean_absolute_error
@@ -115,8 +117,10 @@ def cal_score(y_real,y_hat):
 
     return round(MAEScore,3),round(RMSEScore,3),round(MAPEScore,3)
 
+#pre process input data
 df = pre_process("./Dataset/OPTIdata/5v_180days.csv")
 
+#split data into size=100 batch
 df_list = []
 for i in range(0,df.shape[0],100):
     
@@ -129,17 +133,23 @@ for i in range(0,df.shape[0],100):
         
         break
 
+#predict_count: a pointer, if pointer >=  len(list) then Waiting the new data
+#window_size: capture time series features using sliding window
+#df_list: variables that temporarily store real-time data  
 predict_count = 0
 window_size = 32
+
 while True:
-    
-    
-    
+
+    #check
     if len(df_list) > 0:
         
+        #Waiting for data
         if predict_count >= len(df_list):
             print("Waiting...")
             time.sleep(5)
+        
+        #anomaly detection
         else:
             df_list[predict_count].iloc[:,[1,2,3,4]] = scaler.transform(df_list[predict_count].iloc[:,[1,2,3,4]])
             
@@ -150,26 +160,31 @@ while True:
             time_list = []
             for i in range(0,df_list[predict_count].shape[0]-window_size):
                 
+                #get time range
                 time_range_start = df_list[predict_count].iloc[i:i+window_size].index.values[0]
                 time_range_end = df_list[predict_count].iloc[i:i+window_size].index.values[-1]
                 
+                #change batch shape from (32,4) to (1,32,4)
                 pre_batch = np.expand_dims(df_list[predict_count].iloc[i:i+window_size,[1,2,3,4]].values,axis=0)
                 
+                #anomaly detection
                 pre = predict_model.predict(pre_batch)
                 pre[0] = scaler.inverse_transform(pre[0])
                 pre_batch[0] = scaler.inverse_transform(pre_batch[0])
                 mae,rmse,_ = cal_score(pre_batch[0,:,0:2],pre[0,:,0:2])
+
+                #error function
                 if (mae+rmse)/2 >=0.1:
                     #print("Anomaly")
                     failure_list[i] = 1
                     time_list.append([str(time_range_start)+"~"+str(time_range_end)])
                     #print("{}~{}".format(time_range_start,time_range_end))
                     #print(*failure_list)
-                    
+    
                 elif len(time_list) == 0:
                     continue
                 else:
-                    print("Anomaly Range\n{}~{}".format(str(time_list[0]).split("~")[0],str(time_list[-1]).split("~")[-1]))
+                    print("Anomaly Range:\n{}~{}".format(str(time_list[0]).split("~")[0],str(time_list[-1]).split("~")[-1]))
                     time_list = []
                     
             

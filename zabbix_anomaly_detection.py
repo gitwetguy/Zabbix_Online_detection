@@ -14,7 +14,7 @@ from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import train_test_split
 import math,json,os,random,itertools
-import time
+import time,traceback
 from scipy import stats
 random.seed(2)
 #my scaler
@@ -23,9 +23,12 @@ import predict_utils
 from pickle import load
 import tcn
 from tcn import TCN 
+from bokeh.plotting import figure, show
+
+#pd.set_option('mode.chained_assignment', None)
 
 anomaly_threshold = 5.
-tolerance = 20
+tolerance = 5
 detection_columns = ["Memory used  (%)",
         "CPU utilization (%) ",
         "Disk (0 C:) - Current Disk Queue Length",
@@ -33,13 +36,15 @@ detection_columns = ["Memory used  (%)",
 
 try:
     # Load the scaler
-    scaler = load(open('5v_scaler.pkl', 'rb'))  
+    scaler = load(open('6v_minmax_scaler.pkl', 'rb'))
+    print("load scaler")  
 except:
     print("loading scaler error")
 
 try:
     # Load model
-    predict_model = load_model("./Model/best_model/tcnae.h5",custom_objects={"TCN":TCN})  
+    predict_model = load_model("tcnae.h5",custom_objects={"TCN":TCN})  
+    print("load predict model")
 except:
     print("loading model error")
 
@@ -75,11 +80,11 @@ def pre_process(csv_path):
 
     #Concat dataframe
     new_df = pd.concat(select_col_list,axis=1)
-    new_df["host"] = new_df.iloc[:,0]
-    new_df["Memory used  (%)"] = new_df.iloc[:,1]
-    new_df["CPU utilization (%)"] = new_df.iloc[:,2]
-    new_df["Disk (0 C:) - Current Disk Queue Length"] = new_df.iloc[:,3]
-    new_df["Disk (1 D:) - Current Disk Queue Length"] = new_df.iloc[:,4]
+    new_df.loc[:,"host"] = new_df.iloc[:,0]
+    new_df.loc[:,"Memory used  (%)"] = new_df.iloc[:,1]
+    new_df.loc[:,"CPU utilization (%)"] = new_df.iloc[:,2]
+    new_df.loc[:,"Disk (0 C:) - Current Disk Queue Length"] = new_df.iloc[:,3]
+    new_df.loc[:,"Disk (1 D:) - Current Disk Queue Length"] = new_df.iloc[:,4]
     new_df = new_df.drop(columns="value")
     
 
@@ -108,87 +113,187 @@ def mean_absolute_percentage_error(y_true, y_pred):
 #caculate and return rmse,mae,mape
 def cal_score(y_real,y_hat):
     from sklearn.metrics import mean_squared_error
-    from sklearn.metrics import mean_absolute_error
+    from sklearn.metrics import mean_absolute_error,mean_squared_error
     import math
 
     MAEScore = mean_absolute_error(y_real,y_hat)
+    MSEScore = mean_squared_error(y_real,y_hat)
     RMSEScore = math.sqrt(mean_squared_error(y_real,y_hat))
-    MAPEScore = mean_absolute_percentage_error(y_real,y_hat)
+    
 
-    return round(MAEScore,3),round(RMSEScore,3),round(MAPEScore,3)
+    return MAEScore,MSEScore,RMSEScore
 
-#pre process input data
-df = pre_process("./Dataset/OPTIdata/5v_180days.csv")
+
+#read test df
+df = read_data("test_df.csv",o_dtname="dt",c_dtname = 'datetime')
+print(df)
 
 #split data into size=100 batch
+detect_window_size = 50
 df_list = []
-for i in range(0,df.shape[0],100):
+gt_list = []
+for i in range(0,df.shape[0],detect_window_size):
     
-    if df.iloc[i:i+100].shape[0] == 100:
-        df_list.append(df.iloc[i:i+100,:])
+    if df.iloc[i:i+detect_window_size].shape[0] == detect_window_size:
+        df_list.append(df.iloc[i:i+detect_window_size,:])
+        if np.sum(df.iloc[i:i+detect_window_size,-1].values)>=1:
+            gt_list.append(1)
+        else:
+            gt_list.append(0)
     else:
         print("tail")
         
-        df_list.append(df.iloc[-100:,:])
-        
+        df_list.append(df.iloc[-detect_window_size:,:])
+        if np.sum(df.iloc[-detect_window_size:,-1].values)>=1:
+            gt_list.append(1)
+        else:
+            gt_list.append(0)
         break
+
+print(*gt_list)
+
+
+#split data into size=100 batch
 
 #predict_count: a pointer, if pointer >=  len(list) then Waiting the new data
 #window_size: capture time series features using sliding window
 #df_list: variables that temporarily store real-time data  
 predict_count = 0
-window_size = 32
+window_size = 16
+error_sum_list=[]
+failure_bitmap = []
+rmse_list = []
+mae_list = []
+anomaly_batch = []
 
+
+#for each batch
+for i,df_batch in enumerate(df_list):
+    #print(df_batch.head())
+    #for each windows
+    print("{}th batch".format(i))
+    anomaly_list = []
+    for j in range(0,df_batch.shape[0]-window_size):
+        pre_batch = np.expand_dims(df_list[predict_count].iloc[j:j+window_size,:-1].values,axis=0)
+        #print(pre_batch)
+        
+        pre = predict_model.predict(pre_batch)
+        pre[0] = scaler.inverse_transform(pre[0])
+        pre_batch[0] = scaler.inverse_transform(pre_batch[0])
+        
+        mae,mse,rmse= cal_score(pre_batch[0,:,:],pre[0,:,:])
+        #print(mae)
+
+        if mae >=20000:
+            anomaly_list.append(1)
+        else:
+            anomaly_list.append(0)
+        #os.system("cls")
+        
+    print(*anomaly_list)
+    print(sum(anomaly_list))
+    error_sum_list.append(sum(anomaly_list))
+    predict_count+=1
+    #print(sum(anomaly_list))
+
+
+    if sum(anomaly_list)>=tolerance:
+        anomaly_batch.append(1)
+    else:
+        anomaly_batch.append(0)
+    #os.system("cls")
+
+
+print(*anomaly_batch) 
+print(*error_sum_list)  
+
+result_dict = {
+    "predict":anomaly_batch,
+    "ground true":gt_list,
+    "windows error":error_sum_list
+
+}
+res_df = pd.DataFrame(result_dict)
+    
+                    
+res_df.to_csv("test_res.csv")
+
+"""
 while True:
 
     #check
-    if len(df_list) > 0:
+    if X_test.shape[0] > 0 and predict_count < X_test.shape[0]:
         
         #Waiting for data
-        if predict_count >= len(df_list):
+        if predict_count >= X_test.shape[0]:
             print("Waiting...")
             time.sleep(5)
         
         #anomaly detection
         else:
-            df_list[predict_count].iloc[:,[1,2,3,4]] = scaler.transform(df_list[predict_count].iloc[:,[1,2,3,4]])
             
-                
+           
+            
+            
+            print(X_test.shape)   
             #Sliding Window
             #size=32
-            failure_list = list(itertools.repeat(0,df_list[predict_count].shape[0]-window_size))
+            failure_list = list(itertools.repeat(0,X_test.shape[0]))
             time_list = []
-            for i in range(0,df_list[predict_count].shape[0]-window_size):
+            for i in range(X_test.shape[0]):
                 
-                #get time range
-                time_range_start = df_list[predict_count].iloc[i:i+window_size].index.values[0]
-                time_range_end = df_list[predict_count].iloc[i:i+window_size].index.values[-1]
                 
-                #change batch shape from (32,4) to (1,32,4)
-                pre_batch = np.expand_dims(df_list[predict_count].iloc[i:i+window_size,[1,2,3,4]].values,axis=0)
                 
                 #anomaly detection
-                pre = predict_model.predict(pre_batch)
+                pre = predict_model.predict(X_test[i,:,:].reshape(1,-1,18))
+                
+                print("==============================")
+                print("Predict {}th data\n\n".format(i))
+                print("==============================")
+                time.sleep(0.3)
+                os.system("cls")
                 pre[0] = scaler.inverse_transform(pre[0])
-                pre_batch[0] = scaler.inverse_transform(pre_batch[0])
-                mae,rmse,_ = cal_score(pre_batch[0,:,0:2],pre[0,:,0:2])
-
+                X_test[i,:,:] = scaler.inverse_transform(X_test[i,:,:])
+                #plt.plot(pre[0,:,0],label="pre")
+                #plt.plot(X_test[i,:,0],label="real")
+                #plt.yticks(range(0,110,10))
+                #plt.legend()
+                #plt.show()
+                
+                
+                mae,rmse = cal_score(X_test[i,:,:],pre[0,:,:])
+                mae_list.append(mae)
+                rmse_list.append(rmse)
+                
+                
                 #error function
-                if (mae+rmse)/2 >=0.1:
-                    #print("Anomaly")
+                if rmse >= 60000 or mae >= 20000:
+
+
+                    #print(mae)
+                    print("Anomaly in {}th data!!!!".format(i))
                     failure_list[i] = 1
-                    time_list.append([str(time_range_start)+"~"+str(time_range_end)])
+                    #time_list.append([str(time_range_start)+"~"+str(time_range_end)])
                     #print("{}~{}".format(time_range_start,time_range_end))
-                    #print(*failure_list)
-    
-                elif len(time_list) == 0:
-                    continue
-                else:
-                    print("Anomaly Range:\n{}~{}".format(str(time_list[0]).split("~")[0],str(time_list[-1]).split("~")[-1]))
-                    time_list = []
                     
+    
+                
+                else:
+                    #print("Anomaly Range:\n{}~{}".format(str(time_list[0]).split("~")[0],str(time_list[-1]).split("~")[-1]))
+                    #print(type(str(time_list[0]).split("~")[0]))
+                    #failure_bitmap.append([str(time_list[0]).split("~")[0],str(time_list[-1]).split("~")[-1]])
+                    #print(failure_bitmap)
+                    time_list = []
+                #time.sleep(0.5)
+            
+            #np.savetxt('failure_bitmap.csv', np.array(failure_bitmap), delimiter=",")
             
             predict_count += 1
+            pd.DataFrame(np.array(failure_list)).to_csv("failure_list.csv")
+            pd.DataFrame(np.array(mae_list)).to_csv("mae_list.csv")
+            pd.DataFrame(np.array(rmse_list)).to_csv("rmse_list.csv")
+            break
+
     else:
         print("List empty")        
-    
+"""  

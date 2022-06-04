@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 
 def read_data(path,fill_zero=False):
     df = pd.read_csv(path, sep=',', parse_dates={'dt':['Datetime']}, infer_datetime_format=True, low_memory=False, na_values=['nan','?'], index_col='dt')
@@ -92,7 +93,12 @@ def cal_score(y_real,y_hat,model_name):
     MAEScore = mean_absolute_error(y_real,y_hat)
     RMSEScore = math.sqrt(mean_squared_error(y_real,y_hat))
     MAPEScore = mean_absolute_percentage_error(y_real,y_hat)
-        
+    
+    """plt.plot(y_real[:,0],color='blue',label="Real")
+    plt.plot(y_hat[:,0],color='red',label="Predict")
+    plt.title("MAPE:{}".format(round(MAEScore,3)))
+    plt.legend()
+    plt.show()"""
     #print("Model,MAE,RMSE,MAPE")
     #print("{},{},{},{}".format(model_name,round(MAEScore,3),round(RMSEScore,3),round(MAPEScore,3)))
     #print(round(MAEScore,3))
